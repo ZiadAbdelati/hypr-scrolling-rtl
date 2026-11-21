@@ -1,0 +1,11 @@
+[repository]
+name = "hypr-scrolling-rtl"
+authors = ["ZiadAbdelati"]
+
+[hypr-scrolling-rtl]
+description = "Right-aligned scrolling and reversed-direction resize/DnD fixes for Hyprland"
+authors = ["ZiadAbdelati"]
+output = "build/hypr-scrolling-rtl.so"
+build = [
+    "make all",
+]
