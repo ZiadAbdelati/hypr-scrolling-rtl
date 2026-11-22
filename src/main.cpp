@@ -30,15 +30,19 @@ namespace {
     constexpr float MIN_ROW_HEIGHT   = 0.1F;
     constexpr float MAX_ROW_HEIGHT   = 1.0F;
 
-    HANDLE          g_handle           = nullptr;
-    CFunctionHook*  g_hookCameraOffset = nullptr;
-    CFunctionHook*  g_hookNewTarget    = nullptr;
-    CFunctionHook*  g_hookResizeTarget = nullptr;
+    HANDLE               g_handle           = nullptr;
+    CFunctionHook*       g_hookCameraOffset = nullptr;
+    CFunctionHook*       g_hookNewTarget    = nullptr;
+    CFunctionHook*       g_hookRemoveTarget = nullptr;
+    CFunctionHook*       g_hookResizeTarget = nullptr;
+
+    WP<ITarget>          g_draggedTarget;
+    std::optional<float> g_draggedWidth;
 
     using CalculateCameraOffsetFn = double (*)(CScrollTapeController*, const CBox&, bool);
     using NewTargetFn             = void (*)(CScrollingAlgorithm*, SP<ITarget>);
+    using RemoveTargetFn          = void (*)(CScrollingAlgorithm*, SP<ITarget>);
     using ResizeTargetFn          = void (*)(CScrollingAlgorithm*, const Vector2D&, SP<ITarget>, eRectCorner);
-
     bool isTapeBeingDragged(const CScrollTapeController* ctrl) {
         const auto dragTarget = g_layoutManager->dragController()->target();
         if (!dragTarget)
@@ -84,15 +88,47 @@ namespace {
         return self->getOffset();
     }
 
-    // 2) Reversed-aware DnD drop + rightmost spawn for SCROLL_DIR_LEFT:
+    // 2) Stash dragged column width before removeTarget destroys SColumnData
+    //    (m_draggingTiled is set right after changeFloatingMode returns, so match target + MBIND_MOVE).
+    void hkRemoveTarget(CScrollingAlgorithm* self, SP<ITarget> target) {
+        const auto& dragCtrl = g_layoutManager->dragController();
+        if (self && target && dragCtrl->target() == target && dragCtrl->mode() == MBIND_MOVE) {
+            if (const auto data = self->dataFor(target); data && data->column) {
+                g_draggedTarget = target;
+                g_draggedWidth  = data->column->getColumnWidth();
+            }
+        }
+        reinterpret_cast<RemoveTargetFn>(g_hookRemoveTarget->m_original)(self, target);
+    }
+
+    // 3) Preserve dragged column width on all scrolling workspaces, plus
+    //    reversed-aware DnD drop + rightmost spawn for SCROLL_DIR_LEFT:
     //    - Under SCROLL_DIR_LEFT, index 0 is rightmost and higher indices are further left.
     //    - DnD outer 30% left edge -> insert at idx + 1 (add(idx)), visually left.
     //    - DnD outer 30% right edge -> insert at idx (add(idx - 1)), visually right.
     //    - New non-DnD windows always spawn at index 0 (rightmost).
     void hkNewTarget(CScrollingAlgorithm* self, SP<ITarget> target) {
+        const bool isDnd = g_layoutManager->dragController()->wasDraggingWindow() &&
+                           g_layoutManager->dragController()->draggingTiled();
+
+        std::optional<float> savedWidth;
+        if (g_draggedTarget.lock() == target) {
+            if (isDnd)
+                savedWidth = g_draggedWidth;
+            g_draggedTarget.reset();
+            g_draggedWidth.reset();
+        }
+
         if (!self || !self->m_scrollingData || !self->m_scrollingData->controller ||
             self->m_scrollingData->controller->getDirection() != SCROLL_DIR_LEFT) {
             reinterpret_cast<NewTargetFn>(g_hookNewTarget->m_original)(self, target);
+            if (savedWidth.has_value() && self && self->m_scrollingData) {
+                if (const auto data = self->dataFor(target); data && data->column && data->column->targetDatas.size() == 1) {
+                    data->column->setColumnWidth(*savedWidth);
+                    self->m_scrollingData->fitCol(data->column.lock());
+                    self->m_scrollingData->recalculate();
+                }
+            }
             return;
         }
 
@@ -104,17 +140,15 @@ namespace {
 
         SP<SScrollingTargetData> droppingData   = droppingOn ? self->dataFor(droppingOn->layoutTarget()) : nullptr;
         SP<SColumnData>          droppingColumn = droppingData ? droppingData->column.lock() : nullptr;
-        const auto               width =
+        const auto               ruleWidth =
             (target && target->window()) ? target->window()->m_ruleApplicator->static_.scrollingWidth : std::nullopt;
-
-        const bool isDnd = g_layoutManager->dragController()->wasDraggingWindow() &&
-                           g_layoutManager->dragController()->draggingTiled();
+        const auto               dndWidth = savedWidth.has_value() ? savedWidth : ruleWidth;
 
         if (isDnd) {
             if (!droppingColumn) {
                 // Dropped onto empty space (to the left of the right-aligned tape):
                 // append at the end (leftmost column).
-                auto col = self->m_scrollingData->add(width);
+                auto col = self->m_scrollingData->add(dndWidth);
                 col->add(target);
                 self->m_scrollingData->fitCol(col);
             } else {
@@ -134,9 +168,9 @@ namespace {
                     // Reversed axis: visual left = higher index (after colIdx),
                     // visual right = lower index (after colIdx - 1).
                     if (withinLeft)
-                        droppingColumn = self->m_scrollingData->add(colIdx);
+                        droppingColumn = self->m_scrollingData->add(colIdx, dndWidth);
                     else
-                        droppingColumn = self->m_scrollingData->add(colIdx - 1);
+                        droppingColumn = self->m_scrollingData->add(colIdx - 1, dndWidth);
 
                     droppingColumn->add(target);
                 }
@@ -145,14 +179,13 @@ namespace {
             }
         } else {
             // New non-DnD window: spawn as rightmost column (index 0).
-            auto col = self->m_scrollingData->add(-1, width);
+            auto col = self->m_scrollingData->add(-1, ruleWidth);
             col->add(target);
             self->m_scrollingData->fitCol(col);
         }
 
         self->m_scrollingData->recalculate();
     }
-
     // 3) Reversed-aware mouse resize for SCROLL_DIR_LEFT:
     //    Visual X for column i is [usablePrimary - currentEnd + offset, usablePrimary - currentStart + offset].
     //    - Dragging left edge (edgeLeft): grow/shrink width alone; visual right edge stays stationary.
@@ -311,8 +344,11 @@ namespace {
             }
         };
         removeOne(g_hookResizeTarget);
+        removeOne(g_hookRemoveTarget);
         removeOne(g_hookNewTarget);
         removeOne(g_hookCameraOffset);
+        g_draggedTarget.reset();
+        g_draggedWidth.reset();
     }
 
 } // namespace
@@ -344,6 +380,10 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
             "newTarget",
             "CScrollingAlgorithm::newTarget(",
             reinterpret_cast<void*>(&hkNewTarget));
+        g_hookRemoveTarget = installHook(
+            "removeTarget",
+            "CScrollingAlgorithm::removeTarget(",
+            reinterpret_cast<void*>(&hkRemoveTarget));
         g_hookResizeTarget = installHook(
             "resizeTarget",
             "CScrollingAlgorithm::resizeTarget(",

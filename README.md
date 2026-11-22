@@ -4,12 +4,15 @@ Hyprland plugin for right-aligned `scrolling` workspaces (`direction = left`). H
 
 ## What it does
 
-Only activates on scrolling workspaces with `direction = left`:
+On scrolling workspaces with `direction = left`:
 
 - **Right-aligned tape**: pins fitting tapes flush to the right edge instead of centering them, and spawns new windows at the rightmost column.
 - **Drag-and-drop fix**: inverts outer-edge left/right column insertion for reversed scrolling so columns can be dropped on either edge.
 - **Mouse resize fix**: mirrors left/right edge bounds and camera offsets for reversed scrolling, keeps the tape flush right when shrinking, and allows edge-pinned growth on both edges.
 
+On **all** scrolling workspaces:
+
+- **Preserve width on drag-and-drop**: moving a tiled window with Super+Left-click keeps its column width instead of resetting to `column_width`.
 ## Install
 
 Via `hyprpm`:
