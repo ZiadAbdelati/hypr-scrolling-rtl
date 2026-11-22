@@ -88,11 +88,10 @@ namespace {
         return self->getOffset();
     }
 
-    // 2) Stash dragged column width before removeTarget destroys SColumnData
-    //    (m_draggingTiled is set right after changeFloatingMode returns, so match target + MBIND_MOVE).
+    // 2) Stash a target's column width before removeTarget destroys SColumnData
+    //    so both mouse DnD and workspace-to-workspace moves preserve its width.
     void hkRemoveTarget(CScrollingAlgorithm* self, SP<ITarget> target) {
-        const auto& dragCtrl = g_layoutManager->dragController();
-        if (self && target && dragCtrl->target() == target && dragCtrl->mode() == MBIND_MOVE) {
+        if (self && target) {
             if (const auto data = self->dataFor(target); data && data->column) {
                 g_draggedTarget = target;
                 g_draggedWidth  = data->column->getColumnWidth();
@@ -101,8 +100,8 @@ namespace {
         reinterpret_cast<RemoveTargetFn>(g_hookRemoveTarget->m_original)(self, target);
     }
 
-    // 3) Preserve dragged column width on all scrolling workspaces, plus
-    //    reversed-aware DnD drop + rightmost spawn for SCROLL_DIR_LEFT:
+    // 3) Preserve column width on DnD and workspace moves across all scrolling workspaces,
+    //    plus reversed-aware DnD drop + rightmost spawn for SCROLL_DIR_LEFT:
     //    - Under SCROLL_DIR_LEFT, index 0 is rightmost and higher indices are further left.
     //    - DnD outer 30% left edge -> insert at idx + 1 (add(idx)), visually left.
     //    - DnD outer 30% right edge -> insert at idx (add(idx - 1)), visually right.
@@ -113,12 +112,10 @@ namespace {
 
         std::optional<float> savedWidth;
         if (g_draggedTarget.lock() == target) {
-            if (isDnd)
-                savedWidth = g_draggedWidth;
+            savedWidth = g_draggedWidth;
             g_draggedTarget.reset();
             g_draggedWidth.reset();
         }
-
         if (!self || !self->m_scrollingData || !self->m_scrollingData->controller ||
             self->m_scrollingData->controller->getDirection() != SCROLL_DIR_LEFT) {
             reinterpret_cast<NewTargetFn>(g_hookNewTarget->m_original)(self, target);
@@ -178,8 +175,8 @@ namespace {
                 self->m_scrollingData->fitCol(droppingColumn);
             }
         } else {
-            // New non-DnD window: spawn as rightmost column (index 0).
-            auto col = self->m_scrollingData->add(-1, ruleWidth);
+            // New non-DnD window (or workspace move): spawn as rightmost column (index 0).
+            auto col = self->m_scrollingData->add(-1, dndWidth);
             col->add(target);
             self->m_scrollingData->fitCol(col);
         }

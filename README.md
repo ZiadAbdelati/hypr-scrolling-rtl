@@ -12,7 +12,7 @@ On scrolling workspaces with `direction = left`:
 
 On **all** scrolling workspaces:
 
-- **Preserve width on drag-and-drop**: moving a tiled window with Super+Left-click keeps its column width instead of resetting to `column_width`.
+- **Preserve width on move**: moving a tiled window (Super+Left-click drag-and-drop or moving between scrolling workspaces) keeps its column width instead of resetting to `column_width`.
 ## Install
 
 Via `hyprpm`:
